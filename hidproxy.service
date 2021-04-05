@@ -1,0 +1,10 @@
+[Unit]
+Description=HID proxy for Bluetooth
+After=bluetooth.target
+
+[Service]
+ExecStart=/usr/sbin/go-hidproxy
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
