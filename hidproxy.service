@@ -3,6 +3,7 @@ Description=HID proxy for Bluetooth
 After=bluetooth.target
 
 [Service]
+ExecStartPre=/usr/bin/sleep 20
 ExecStart=/usr/sbin/go-hidproxy
 Restart=always
 
