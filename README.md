@@ -4,15 +4,21 @@ Proxies Bluetooth keyboards and mouse as HID devices (eg. with Raspberry Zero Pi
 
 ## Build
 
-Build with Go 1.11+.
+Build with Go 1.11+:
+
+```sh
+go get github.com/rosmo/go-hidproxy/cmd/go-hidproxy
+sudo cp ~/go/bin/go-hidproxy /usr/sbin/go-hidproxy
+```
 
 ## Install
 
-- Copy binary to `/usr/sbin/go-hidproxy`
-- Install systemd unit file to `/etc/systemd/system`
-- Reload daemons: `sudo systemctl daemon-reload`
-- Enable hidproxy: `sudo systemctl enable hidproxy`
-- (Optionally) Start hidproxy: `sudo systemctl start hidproxy`
+  - Build the binary
+  - Copy binary to `/usr/sbin/go-hidproxy`
+  - Install systemd unit file to `/etc/systemd/system`
+  - Reload daemons: `sudo systemctl daemon-reload`
+  - Enable hidproxy: `sudo systemctl enable hidproxy`
+  - (Optionally) Start hidproxy: `sudo systemctl start hidproxy`
 
 ## Raspberry Pi Zero W setup
 
@@ -36,8 +42,7 @@ libcomposite
 evdev
 ```
 
-
-## Pair Bluetooth keyboard
+## Pair Bluetooth keyboard/mouse
 
 One time pairing:
 
@@ -47,6 +52,7 @@ One time pairing:
 > pairable on
 > agent NoInputNoOutput
 > default-agent
+> scan on
 > connect aa:bb:cc:dd:ee:ff
 > trust aa:bb:cc:dd:ee:ff
 ```
