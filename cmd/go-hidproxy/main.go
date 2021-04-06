@@ -4,9 +4,6 @@ package main
 // Licensed under Apache License 2.0
 
 import (
-	evdev "github.com/gvalkov/golang-evdev"	
-	log "github.com/sirupsen/logrus"
-	orderedmap "github.com/wk8/go-ordered-map"
 	"fmt"
 	"sync"
 	"time"
@@ -17,7 +14,19 @@ import (
 	"io/ioutil"
 	"path/filepath"
 	"bytes"
+	"context"
+	"github.com/muka/go-bluetooth/api"
+	"github.com/muka/go-bluetooth/bluez/profile/adapter"
+	evdev "github.com/gvalkov/golang-evdev"	
+	log "github.com/sirupsen/logrus"
+	orderedmap "github.com/wk8/go-ordered-map"
+	udev "github.com/jochenvg/go-udev"
 )
+
+type InputDevice struct {
+	Device string
+    Name string
+}
 
 var Scancodes = map[uint16]uint16{
 	2: 30, // 1
@@ -236,7 +245,7 @@ func SetupUSBGadget() {
 	time.Sleep(1000 * time.Millisecond)
 }
 
-func HandleKeyboard(output chan<- error, input chan<- []byte, close chan<- bool, dev evdev.InputDevice) (error) {
+func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool, rate uint, delay uint, dev evdev.InputDevice) (error) {
 	keysDown := make([]uint16, 0)
 	err := dev.Grab()
 	if err != nil {
@@ -248,7 +257,11 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close chan<- bool,
 
 	log.Infof("Grabbed keyboard-like device: %s (%s)", dev.Name, dev.Fn)
 	syscall.SetNonblock(int(dev.File.Fd()), true)
-	
+
+	log.Infof("Setting repeat rate to %d, delay %d for %s (%s)", rate, delay, dev.Name, dev.Fn)
+	dev.SetRepeatRate(rate, delay)
+
+	loop := 0
 	for {
 		err = dev.File.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
 		if err != nil {
@@ -329,13 +342,24 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close chan<- bool,
 				log.Warnf("Unknown scancode: %d\n", keyEvent.Scancode)
 			}
 		}
+		loop += 1
+		if loop > 3 {
+			select {
+			case _ = <-close:
+				log.Infof("Stopping processing keyboard input from: %s (%s)", dev.Name, dev.Fn)
+				output <- nil
+				return nil
+			default:
+			}
+			loop = 0
+		}
 	}
 
 	output <- nil
 	return nil
 }
 
-func HandleMouse(output chan<- error, input chan<- []byte, close chan<- bool, dev evdev.InputDevice) (error) {
+func HandleMouse(output chan<- error, input chan<- []byte, close <-chan bool, dev evdev.InputDevice) (error) {
 	err := dev.Grab()
 	if err != nil {
 		log.Fatal(err)
@@ -347,6 +371,7 @@ func HandleMouse(output chan<- error, input chan<- []byte, close chan<- bool, de
 	log.Infof("Grabbed mouse-like device: %s (%s)", dev.Name, dev.Fn)
 	syscall.SetNonblock(int(dev.File.Fd()), true)
 
+	loop := 0
 	var buttons uint8 = 0x0
 	for {
 		err = dev.File.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
@@ -419,7 +444,17 @@ func HandleMouse(output chan<- error, input chan<- []byte, close chan<- bool, de
 			}
 			input <- mouseToSend
 		}
-
+		loop += 1
+		if loop > 3 {
+			select {
+			case _ = <-close:
+				log.Infof("Stopping processing mouse input from: %s (%s)", dev.Name, dev.Fn)
+				output <- nil
+				return nil
+			default:
+			}
+			loop = 0
+		}
 	}
 
 	output <- nil
@@ -471,12 +506,77 @@ func SendMouseReports(input <-chan []byte) (error) {
 	return nil
 }
 
+func GetDisconnectedDevices(adapterId string) ([]string, error) {
+	log.Debugf("Getting adapter: %s", adapterId)
+	a, err := adapter.GetAdapter(adapterId)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debugf("Getting devices from adapter: %s", adapterId)
+	devices, err := a.GetDevices()
+	if err != nil {
+		return nil, err
+	}
+
+	disconnected := make([]string, 0)
+	connected := make([]string, 0)
+	for _, dev := range devices {
+		address, err := dev.GetAddress()
+		if err != nil {
+			continue 
+		}
+		name, err := dev.GetName()
+		if err != nil {
+			name = "?"
+		}
+
+		log.Infof("Checking if device %s (%s) is connected...", name, address)
+		deviceConnected, err := dev.GetConnected()
+		if err == nil {
+			if !deviceConnected {
+				log.Infof("Device %s is disconnected.", name)
+				disconnected = append(disconnected, name)
+			} else {
+				log.Infof("Device %s is still connected.", name)
+				connected = append(connected, name)
+			}
+		}
+	}
+	results := make([]string, 0)
+	for _, dname := range disconnected {
+		ok := true
+		for _, cname := range connected {
+			if cname == dname {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			inResults := false
+			for _, rname := range results {
+				if rname == dname {
+					inResults = true
+				}
+			}
+			if !inResults {
+				results = append(results, dname)
+			}
+		}
+	}
+	return results, nil
+}
+
 func main() {
 	var wg sync.WaitGroup
 	logLevelPtr := flag.String("loglevel", "info", "log level (panic, fatal, error, warn, info, debug, trace)")
 	setupHid := flag.Bool("setuphid", true, "setup HID files on startup")
 	setupMouse := flag.Bool("mouse", true, "setup mouse(s)")
 	setupKeyboard := flag.Bool("keyboard", true, "setup keyboard(s)")
+	monitorUdev := flag.Bool("monitor-udev", true, "monitor udev & BlueZ events for disconnects")
+	adapterId := flag.String("bluez-adapter", "hci0", "BlueZ adapter (default hci0)")
+	kbdRepeat := flag.Int("kbdrepeat", 62, "set keyboard repeat rate (default 62)")
+	kbdDelay := flag.Int("kbddelay", 300, "set keyboard repeat delay in ms (default 300)")
 	flag.Parse()
 
 	logLevel, err := log.ParseLevel(*logLevelPtr)
@@ -491,15 +591,55 @@ func main() {
 		SetupUSBGadget()
 	}
 
-	keyboardInput := make(chan []byte, 0)
-	mouseInput := make(chan []byte, 0)
-	output := make(map[string]chan error, 0)
-	close := make(chan bool, 0)
+	keyboardInput := make(chan []byte, 10)
+	mouseInput := make(chan []byte, 100)
+	output := make(map[InputDevice]chan error, 0)
+	close := make(map[InputDevice]chan bool, 0)
+
+	var udevCh <-chan *udev.Device
+	var cancel context.CancelFunc
+	var ctx context.Context
+	
+	defer api.Exit()
+	u := udev.Udev{}
+	if *monitorUdev {
+		log.Info("Starting udev monitoring for Bluetooth devices")
+		m := u.NewMonitorFromNetlink("udev")
+		m.FilterAddMatchSubsystem("bluetooth")
+
+		ctx, cancel = context.WithCancel(context.Background())
+		udevCh, _ = m.DeviceChan(ctx)
+	}
 
 	go SendKeyboardReports(keyboardInput)
 	go SendMouseReports(mouseInput)
 	wg.Add(1)
 	for {
+		select {
+		case d := <-udevCh:
+			if d.Action() == "add" || d.Action() == "remove" {
+				disconnected, err := GetDisconnectedDevices(*adapterId)
+				if err != nil {
+					log.Errorf("Error checking disconnected devices: %s", err.Error())
+				} else {
+					for _, device := range disconnected {
+						for devId, _ := range output {
+							if strings.HasPrefix(devId.Name, device) {
+								log.Infof("Disconnected device, stopping listening to: %s (%s)", devId.Name, devId.Device)
+								select {
+								case close[devId] <- true:
+									log.Infof("Sent stop signal to: %s (%s)", devId.Name, devId.Device)
+								default:
+								}
+								
+							}
+						}
+					}
+				}
+			}
+		default:
+		}
+
 		log.Info("Polling for new devices in /dev/input\n")
 		devices, _ := evdev.ListInputDevices()
 		for _, dev := range devices {
@@ -515,17 +655,20 @@ func main() {
 			}
 			log.Debugf("Device %s (%s), capabilities: %v (mouse=%t, kbd=%t)", dev.Name, dev.Fn, dev.Capabilities, isMouse, isKeyboard)
 			if isKeyboard || isMouse {
-				devId := fmt.Sprintf("%s-%s", dev.Fn, dev.Name)
+				devId := InputDevice{
+					Device: dev.Fn,
+					Name: dev.Name,
+				}
 				if _, ok := output[devId]; !ok {
-					output[devId] = make(chan error)
+					output[devId] = make(chan error, 10)
+					close[devId] = make(chan bool, 10)
 					if isKeyboard && !isMouse && *setupKeyboard {
-						go HandleKeyboard(output[devId], keyboardInput, close, *dev)
+						go HandleKeyboard(output[devId], keyboardInput, close[devId], uint(*kbdRepeat), uint(*kbdDelay), *dev)
 						wg.Add(1)
 					}
 					log.Debugf("isKeyboard: %t, isMouse: %t, setupMouse: %t", !isKeyboard, isMouse, *setupMouse)
 					if isMouse && *setupMouse {
-						log.Debugf("MOUSING!")
-						go HandleMouse(output[devId], mouseInput, close, *dev)
+						go HandleMouse(output[devId], mouseInput, close[devId], *dev)
 						wg.Add(1)
 					}
 				}
@@ -536,13 +679,15 @@ func main() {
 			select {
 			case msg := <-eventOutput:
 				if msg == nil {
-					log.Warnf("Event handler quit: %s", id)
+					log.Warnf("Event handler quit: %s", id.Device)
 				} else {
-					log.Errorf("Received error from %s: %s", id, msg.Error())
+					log.Errorf("Received error from %s: %s", id.Device, msg.Error())
 				}
 				delete(output, id)
 				wg.Done()
+			default:
 			}
 		}
 	}
+	cancel()
 }

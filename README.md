@@ -4,6 +4,8 @@ Proxies Bluetooth keyboards and mouse as HID devices (eg. with Raspberry Zero Pi
 
 ## Build
 
+Requires `libudev-dev` package (`sudo apt install libudev-dev`).
+
 Build with Go 1.11+:
 
 ```sh
@@ -53,6 +55,12 @@ One time pairing:
 > agent NoInputNoOutput
 > default-agent
 > scan on
+> pair aa:bb:cc:dd:ee:ff
 > connect aa:bb:cc:dd:ee:ff
 > trust aa:bb:cc:dd:ee:ff
 ```
+
+### Tested with
+
+  - TEX Shinobi keyboard / Trackpoint combo
+  - Razer Deathadder V2 Pro
