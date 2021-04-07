@@ -1,103 +1,110 @@
 package main
+
 // Go implementation of Bluetooth to USB HID proxy
 // Author: Taneli Leppä <rosmo@rosmo.fi>
 // Licensed under Apache License 2.0
 
 import (
-	"fmt"
-	"sync"
-	"time"
-	"os"
-	"flag"
-	"syscall"
-	"strings"
-	"io/ioutil"
-	"path/filepath"
 	"bytes"
 	"context"
+	"flag"
+	"fmt"
+	evdev "github.com/gvalkov/golang-evdev"
+	udev "github.com/jochenvg/go-udev"
+	"github.com/loov/hrtime"
 	"github.com/muka/go-bluetooth/api"
 	"github.com/muka/go-bluetooth/bluez/profile/adapter"
-	evdev "github.com/gvalkov/golang-evdev"	
 	log "github.com/sirupsen/logrus"
 	orderedmap "github.com/wk8/go-ordered-map"
-	udev "github.com/jochenvg/go-udev"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
 )
 
 type InputDevice struct {
 	Device string
-    Name string
+	Name   string
+}
+
+type InputMessage struct {
+	Message   []byte
+	Timestamp time.Duration
 }
 
 var Scancodes = map[uint16]uint16{
-	2: 30, // 1
-	3: 31, // 2
-	4: 32, // 3
-	5: 33, // 4
-	6: 34, // 5
-	7: 35, // 6
-	8: 36, // 7
-	9: 37, // 8
-	10: 38, // 9
-	11: 39, // 0
-	57: 44, // space
-	14: 42, // bkspc
-	28: 40, // enter
-	1: 41, // ESC
+	2:   30, // 1
+	3:   31, // 2
+	4:   32, // 3
+	5:   33, // 4
+	6:   34, // 5
+	7:   35, // 6
+	8:   36, // 7
+	9:   37, // 8
+	10:  38, // 9
+	11:  39, // 0
+	57:  44, // space
+	14:  42, // bkspc
+	28:  40, // enter
+	1:   41, // ESC
 	106: 79, // RIGHT
 	105: 80, // LEFT
 	108: 81, // DOWN
 	103: 82, // UP
-	59: 58, // F1
-	60: 59, // F2
-	61: 60, // F3
-	62: 61, // F4
-	63: 62, // F5
-	64: 63, // F6
-	65: 64, // F7
-	66: 65, // F8
-	67: 66, // F9
-	68: 67, // F10
-	69: 68, // F11
-	70: 69, // F12
-	12: 45, // -
-	13: 46, // =
-	15: 43, // TAB
-	26: 47, // {
-	27: 48, // ]
-	39: 51, // :
-	40: 52, // "
-	51: 54, // <
-	52: 55, // >
-	53: 56, // ?
-	41: 50, // //
-	43: 49, // \
-	30: 4, // a
-	48: 5, // b
-	46: 6, // c
-	32: 7, // d
-	18: 8, // e
-	33: 9, // f
-	34: 10, // g
-	35: 11, // h
-	23: 12, // i
-	36: 13, // j
-	37: 14, // k
-	38: 15, // l
-	50: 16, // m
-	49: 17, // n
-	24: 18, // o
-	25: 19, // p
-	16: 20, // q
-	19: 21, // r 
-	31: 22, // s
-	20: 23, // t
-	22: 24, // u
-	47: 25, // v
-	17: 26, // w
-	45: 27, // x
-	21: 28, // y
-	44: 29, // z
-	86: 49, // | & \
+	59:  58, // F1
+	60:  59, // F2
+	61:  60, // F3
+	62:  61, // F4
+	63:  62, // F5
+	64:  63, // F6
+	65:  64, // F7
+	66:  65, // F8
+	67:  66, // F9
+	68:  67, // F10
+	69:  68, // F11
+	70:  69, // F12
+	12:  45, // -
+	13:  46, // =
+	15:  43, // TAB
+	26:  47, // {
+	27:  48, // ]
+	39:  51, // :
+	40:  52, // "
+	51:  54, // <
+	52:  55, // >
+	53:  56, // ?
+	41:  50, // //
+	43:  49, // \
+	30:  4,  // a
+	48:  5,  // b
+	46:  6,  // c
+	32:  7,  // d
+	18:  8,  // e
+	33:  9,  // f
+	34:  10, // g
+	35:  11, // h
+	23:  12, // i
+	36:  13, // j
+	37:  14, // k
+	38:  15, // l
+	50:  16, // m
+	49:  17, // n
+	24:  18, // o
+	25:  19, // p
+	16:  20, // q
+	19:  21, // r
+	31:  22, // s
+	20:  23, // t
+	22:  24, // u
+	47:  25, // v
+	17:  26, // w
+	45:  27, // x
+	21:  28, // y
+	44:  29, // z
+	86:  49, // | & \
 	104: 75, // PgUp
 	109: 78, // PgDn
 	102: 74, // Home
@@ -105,37 +112,37 @@ var Scancodes = map[uint16]uint16{
 	110: 73, // Insert
 	119: 72, // Pause
 	//70: 71, // ScrLk
-	99: 70, // PrtSc
-	87: 68, // F11
-	88: 69, // F12
+	99:  70,  // PrtSc
+	87:  68,  // F11
+	88:  69,  // F12
 	113: 127, // Mute
 	114: 129, // VolDn
 	115: 128, // VolUp
-	58: 57, // CapsLock (non-locking)
+	58:  57,  // CapsLock (non-locking)
 	158: 122, // "Undo" (Thinkpad special key)
 	159: 121, // "Again" (Thinkpad special key)
-	29: 224, // Left-Ctrl
+	29:  224, // Left-Ctrl
 	125: 227, // Left-Cmd
-	42: 225, // Left-Shift
-	56: 226, // Left-Alt
+	42:  225, // Left-Shift
+	56:  226, // Left-Alt
 	100: 230, // AltGr (Right-Alt)
 	127: 231, // Right-Cmd
-	97: 228, // Right-Ctrl
-	54: 229, // Right-Shift
+	97:  228, // Right-Ctrl
+	54:  229, // Right-Shift
 }
 
 const (
-	RIGHT_META = 1 << 7
-	RIGHT_ALT = 1 << 6
-	RIGHT_SHIFT = 1 << 5
+	RIGHT_META    = 1 << 7
+	RIGHT_ALT     = 1 << 6
+	RIGHT_SHIFT   = 1 << 5
 	RIGHT_CONTROL = 1 << 4
-	LEFT_META = 1 << 3
-	LEFT_ALT = 1 << 2
-	LEFT_SHIFT = 1 << 1
-	LEFT_CONTROL = 1 << 0
-	
-	BUTTON_LEFT = 1 << 0
-	BUTTON_RIGHT = 1 << 1
+	LEFT_META     = 1 << 3
+	LEFT_ALT      = 1 << 2
+	LEFT_SHIFT    = 1 << 1
+	LEFT_CONTROL  = 1 << 0
+
+	BUTTON_LEFT   = 1 << 0
+	BUTTON_RIGHT  = 1 << 1
 	BUTTON_MIDDLE = 1 << 2
 )
 
@@ -189,14 +196,14 @@ func SetupUSBGadget() {
 				continue
 			}
 		}
-		
+
 		log.Debugf("Writing file: %s", pair.Key.(string))
 		err = ioutil.WriteFile(pair.Key.(string), []byte(pair.Value.(string)), os.FileMode(0644))
 		if err != nil {
 			log.Warnf("Failed to write file: %s (maybe already set up)", pair.Key.(string))
 		}
 	}
-	
+
 	for file, contents := range filesBytes {
 		content, err := ioutil.ReadFile(file)
 		if err == nil {
@@ -210,7 +217,7 @@ func SetupUSBGadget() {
 			log.Warnf("Failed to create file: %s (maybe already set up)", file)
 		}
 	}
-	
+
 	for source, target := range symlinks {
 		if _, err := os.Stat(target); os.IsNotExist(err) {
 			log.Debugf("Creating symlink from %s to: %s", source, target)
@@ -220,7 +227,7 @@ func SetupUSBGadget() {
 			}
 		}
 	}
-	
+
 	time.Sleep(1000 * time.Millisecond)
 
 	matches, err := filepath.Glob("/sys/class/udc/*")
@@ -245,7 +252,7 @@ func SetupUSBGadget() {
 	time.Sleep(1000 * time.Millisecond)
 }
 
-func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool, rate uint, delay uint, dev evdev.InputDevice) (error) {
+func HandleKeyboard(output chan<- error, input chan<- InputMessage, close <-chan bool, rate uint, delay uint, dev evdev.InputDevice) error {
 	keysDown := make([]uint16, 0)
 	err := dev.Grab()
 	if err != nil {
@@ -277,7 +284,7 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool,
 		if err != nil {
 			log.Fatal(err)
 			output <- err
-			return err	
+			return err
 		}
 		log.Debugf("Keyboard input event: type=%d, code=%d, value=%d", event.Type, event.Code, event.Value)
 		if event.Type == evdev.EV_KEY {
@@ -299,7 +306,7 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool,
 					newKeysDown := make([]uint16, 0)
 					for _, k := range keysDown {
 						if k != keyCode {
-							newKeysDown = append(newKeysDown, k)						
+							newKeysDown = append(newKeysDown, k)
 						}
 					}
 					keysDown = newKeysDown
@@ -311,7 +318,7 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool,
 					switch {
 					case k == 224: // Left-Ctrl
 						modifiers |= LEFT_CONTROL
-					case k == 227:  // Left-Cmd
+					case k == 227: // Left-Cmd
 						modifiers |= LEFT_META
 					case k == 225: // Left-Shift
 						modifiers |= LEFT_SHIFT
@@ -325,7 +332,7 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool,
 						modifiers |= RIGHT_SHIFT
 					case k == 230: // Right-Alt
 						modifiers |= RIGHT_ALT
-					default: 
+					default:
 						keysToSend = append(keysToSend, uint8(k))
 					}
 				}
@@ -335,8 +342,11 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool,
 						keysToSend = append(keysToSend, uint8(0))
 					}
 				}
-				input <- keysToSend
-				
+				input <- InputMessage{
+					Timestamp: hrtime.Now(),
+					Message: keysToSend,
+				}
+
 				log.Debugf("Key status (scancode %d, keycode %d): %v\n", keyEvent.Scancode, keyCode, keysToSend)
 			} else {
 				log.Warnf("Unknown scancode: %d\n", keyEvent.Scancode)
@@ -359,7 +369,7 @@ func HandleKeyboard(output chan<- error, input chan<- []byte, close <-chan bool,
 	return nil
 }
 
-func HandleMouse(output chan<- error, input chan<- []byte, close <-chan bool, dev evdev.InputDevice) (error) {
+func HandleMouse(output chan<- error, input chan<- InputMessage, close <-chan bool, dev evdev.InputDevice) error {
 	err := dev.Grab()
 	if err != nil {
 		log.Fatal(err)
@@ -388,7 +398,7 @@ func HandleMouse(output chan<- error, input chan<- []byte, close <-chan bool, de
 		if err != nil {
 			log.Fatal(err)
 			output <- err
-			return err	
+			return err
 		}
 		log.Debugf("Mouse input event: type=%d, code=%d, value=%d", event.Type, event.Code, event.Value)
 		var buttonOp bool = false
@@ -442,7 +452,10 @@ func HandleMouse(output chan<- error, input chan<- []byte, close <-chan bool, de
 				mouseToSend = append(mouseToSend, 0x00)
 				mouseToSend = append(mouseToSend, 0x00)
 			}
-			input <- mouseToSend
+			input <- InputMessage{
+					Timestamp: hrtime.Now(),
+					Message: mouseToSend,
+				}
 		}
 		loop += 1
 		if loop > 3 {
@@ -462,46 +475,75 @@ func HandleMouse(output chan<- error, input chan<- []byte, close <-chan bool, de
 
 }
 
-func SendKeyboardReports(input <-chan []byte) (error) {
+func SendKeyboardReports(input <-chan InputMessage) error {
 	log.Info("Opening keyboard /dev/hidg0 for writing...")
-	file, err := os.OpenFile("/dev/hidg0", os.O_APPEND | os.O_WRONLY, 0600)
-    if err != nil {
+	file, err := os.OpenFile("/dev/hidg0", os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
 		log.Warn("Error opening /dev/hidg0, are you running as root?")
 		log.Fatal(err)
-        return err
-    }
+		return err
+	}
 	defer file.Close()
 
+	var avg, min, max, loop int64 = 0, 0, 0, 0
 	for {
 		msg := <-input
-		bytesWritten, err := file.Write(msg)
+		bytesWritten, err := file.Write(msg.Message)
 		if err != nil {
 			log.Fatal(err)
 			return err
+		} 
+		latency := hrtime.Since(msg.Timestamp).Nanoseconds()
+		if latency < min {
+			min = latency
 		}
+		if latency > max {
+			max = latency
+		}
+		avg = (avg + latency) / 2
+		loop += 1
+		if loop > 50 {
+			log.Debugf("Latency: now=%d, avg=%d, min=%d, max=%d μs", latency/1000, avg/1000, min/1000, max/1000)
+			loop = 0
+		}
+
 		log.Debugf("Wrote %d bytes to /dev/hidg0 (%v)", bytesWritten, msg)
 	}
 	return nil
 }
 
-func SendMouseReports(input <-chan []byte) (error) {
+func SendMouseReports(input <-chan InputMessage) error {
 	log.Info("Opening keyboard /dev/hidg1 for writing...")
-	file, err := os.OpenFile("/dev/hidg1", os.O_APPEND | os.O_WRONLY, 0600)
-    if err != nil {
+	file, err := os.OpenFile("/dev/hidg1", os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
 		log.Warn("Error opening /dev/hidg1, are you running as root?")
 		log.Fatal(err)
-        return err
-    }
+		return err
+	}
 	defer file.Close()
 
+	var avg, min, max, loop int64 = 0, 0, 0, 0
 	for {
 		msg := <-input
-		bytesWritten, err := file.Write(msg)
+		bytesWritten, err := file.Write(msg.Message)
 		if err != nil {
 			log.Fatal(err)
 			return err
 		}
 		log.Debugf("Wrote %d bytes to /dev/hidg1 (%v)", bytesWritten, msg)
+		latency := hrtime.Since(msg.Timestamp).Nanoseconds()
+		if latency < min {
+			min = latency
+		}
+		if latency > max {
+			max = latency
+		}
+		avg = (avg + latency) / 2
+		loop += 1
+		if loop > 100 {
+			log.Debugf("Latency: now=%d, avg=%d, min=%d, max=%d μs", latency/1000, avg/1000, min/1000, max/1000)
+			loop = 0
+		}
 	}
 	return nil
 }
@@ -524,7 +566,7 @@ func GetDisconnectedDevices(adapterId string) ([]string, error) {
 	for _, dev := range devices {
 		address, err := dev.GetAddress()
 		if err != nil {
-			continue 
+			continue
 		}
 		name, err := dev.GetName()
 		if err != nil {
@@ -591,15 +633,15 @@ func main() {
 		SetupUSBGadget()
 	}
 
-	keyboardInput := make(chan []byte, 10)
-	mouseInput := make(chan []byte, 100)
+	keyboardInput := make(chan InputMessage, 10)
+	mouseInput := make(chan InputMessage, 100)
 	output := make(map[InputDevice]chan error, 0)
 	close := make(map[InputDevice]chan bool, 0)
 
 	var udevCh <-chan *udev.Device
 	var cancel context.CancelFunc
 	var ctx context.Context
-	
+
 	defer api.Exit()
 	u := udev.Udev{}
 	if *monitorUdev {
@@ -631,7 +673,7 @@ func main() {
 									log.Infof("Sent stop signal to: %s (%s)", devId.Name, devId.Device)
 								default:
 								}
-								
+
 							}
 						}
 					}
@@ -644,20 +686,20 @@ func main() {
 		devices, _ := evdev.ListInputDevices()
 		for _, dev := range devices {
 			isMouse := false
-			isKeyboard := false			
+			isKeyboard := false
 			for k := range dev.Capabilities {
 				if k.Name == "EV_REL" {
 					isMouse = true
 				}
 				if k.Name == "EV_KEY" {
-					isKeyboard = true	
+					isKeyboard = true
 				}
 			}
 			log.Debugf("Device %s (%s), capabilities: %v (mouse=%t, kbd=%t)", dev.Name, dev.Fn, dev.Capabilities, isMouse, isKeyboard)
 			if isKeyboard || isMouse {
 				devId := InputDevice{
 					Device: dev.Fn,
-					Name: dev.Name,
+					Name:   dev.Name,
 				}
 				if _, ok := output[devId]; !ok {
 					output[devId] = make(chan error, 10)
