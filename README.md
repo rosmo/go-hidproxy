@@ -64,3 +64,4 @@ One time pairing:
 
   - TEX Shinobi keyboard / Trackpoint combo
   - Razer Deathadder V2 Pro
+  - Microsoft Designer Compact Keyboard
