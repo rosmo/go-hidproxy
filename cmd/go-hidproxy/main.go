@@ -129,6 +129,10 @@ var Scancodes = map[uint16]uint16{
 	127: 231, // Right-Cmd
 	97:  228, // Right-Ctrl
 	54:  229, // Right-Shift
+	111: 76,  // Delete
+	164: 232, // Play-Pause
+	165: 234, // Previous-Track
+	163: 233, // Next-Track
 }
 
 const (
