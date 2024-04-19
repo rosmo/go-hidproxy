@@ -5,6 +5,7 @@ package main
 // Licensed under Apache License 2.0
 
 import (
+	hidproxy "github.com/rosmo/go-hidproxy"
 	"bytes"
 	"context"
 	"flag"
