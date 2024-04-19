@@ -6,10 +6,10 @@ Proxies Bluetooth keyboards and mouse as HID devices (eg. with Raspberry Zero Pi
 
 Requires `libudev-dev` package (`sudo apt install libudev-dev`).
 
-Build with Go 1.11+:
+Build with Go 1.20+:
 
 ```sh
-go get github.com/rosmo/go-hidproxy/cmd/go-hidproxy
+go install github.com/rosmo/go-hidproxy/cmd/go-hidproxy@latest
 sudo cp ~/go/bin/go-hidproxy /usr/sbin/go-hidproxy
 ```
 
