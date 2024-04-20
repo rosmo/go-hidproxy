@@ -10,7 +10,18 @@ Build with Go 1.20+:
 
 ```sh
 go install github.com/rosmo/go-hidproxy/cmd/go-hidproxy@latest
-sudo cp ~/go/bin/go-hidproxy /usr/sbin/go-hidproxy
+sudo cp ~/go/bin/go-hidproxy /usr/bin/go-hidproxy
+```
+
+Or even with a more complete example:
+```sh
+wget https://go.dev/dl/go1.22.2.linux-arm64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.22.2.linux-arm64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+sudo apt-get install -y libudev-dev
+go install github.com/rosmo/go-hidproxy/cmd/go-hidproxy@latest
+sudo cp ~/go/bin/go-hidproxy /usr/bin/go-hidproxy
+sudo go-hidproxy
 ```
 
 ## Install
